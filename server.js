@@ -13,10 +13,10 @@
 require('dotenv').config();
 
 // Import necessary libraries
-const express = 'express';
+const express = require('express'); // <-- THIS LINE IS NOW FIXED
 const http = require('http');
 const WebSocket = require('ws');
-const path = 'path';
+const path = require('path');
 
 // Retrieve API keys and configuration from environment variables
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -44,7 +44,7 @@ app.post('/twiml', (req, res) => {
   console.log("Received TwiML request from Twilio.");
 
   // Dynamically determine the WebSocket URL based on the request host
-  const host = req.headers.host;
+  const host = req.get('host');
   const websocketUrl = `wss://${host}`;
 
   // Generate the TwiML response
