@@ -1,6 +1,6 @@
 // =================================================================================
-// FINAL FIX - ElevenLabs streaming with proper query parameters
-// Based on official ElevenLabs + Twilio solution
+// FINAL VERSION - Natural Voice + Full AI Conversation
+// Fixed voice settings and improved conversation flow
 // =================================================================================
 
 require('dotenv').config();
@@ -55,19 +55,19 @@ app.get('/health', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------------
-// FIXED: ElevenLabs streaming with proper WebSocket and query params
+// IMPROVED: Natural voice ElevenLabs streaming
 // ---------------------------------------------------------------------------------
 
 const streamTextToSpeech = async (text, streamSid, ws) => {
   if (!text || !streamSid) return;
   
-  console.log(`🎤 Speaking: "${text}"`);
+  console.log(`🎤 AI Speaking: "${text}"`);
   
   // Clear Twilio buffer
   ws.send(JSON.stringify({ event: "clear", streamSid }));
 
   try {
-    // CRITICAL FIX: Use ElevenLabs streaming WebSocket with proper query params
+    // ElevenLabs streaming WebSocket with μ-law output
     const streamingUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream-input?model_id=eleven_turbo_v2&output_format=ulaw_8000`;
     
     const elevenLabsWs = new WebSocket(streamingUrl, {
@@ -77,19 +77,19 @@ const streamTextToSpeech = async (text, streamSid, ws) => {
     });
 
     elevenLabsWs.on('open', () => {
-      console.log('🔗 ElevenLabs WebSocket connected');
+      console.log('🔗 ElevenLabs connected');
       
-      // Send the text to convert
+      // FIXED: Natural voice settings for phone calls
       elevenLabsWs.send(JSON.stringify({
         text: text,
         voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.5,
-          style: 0.0,
-          use_speaker_boost: false
+          stability: 0.71,           // Higher stability for natural sound
+          similarity_boost: 0.8,     // Higher similarity for voice consistency  
+          style: 0.21,               // Some style for naturalness
+          use_speaker_boost: false   // Keep false for telephony
         },
         generation_config: {
-          chunk_length_schedule: [120, 160, 250, 290]
+          chunk_length_schedule: [120, 160, 250, 290] // Smooth chunking
         }
       }));
       
@@ -102,7 +102,7 @@ const streamTextToSpeech = async (text, streamSid, ws) => {
         const response = JSON.parse(data);
         
         if (response.audio) {
-          // Direct μ-law audio from ElevenLabs - send straight to Twilio
+          // Send audio directly to Twilio
           const mediaMessage = {
             event: "media",
             streamSid: streamSid,
@@ -112,7 +112,7 @@ const streamTextToSpeech = async (text, streamSid, ws) => {
         }
         
         if (response.isFinal) {
-          console.log('✅ ElevenLabs streaming complete');
+          console.log('✅ Speech complete');
           ws.send(JSON.stringify({ 
             event: "mark", 
             streamSid, 
@@ -120,89 +120,138 @@ const streamTextToSpeech = async (text, streamSid, ws) => {
           }));
         }
       } catch (error) {
-        console.error('❌ ElevenLabs message parse error:', error);
+        console.error('❌ ElevenLabs parse error:', error);
       }
     });
 
     elevenLabsWs.on('error', (error) => {
-      console.error('❌ ElevenLabs WebSocket error:', error);
+      console.error('❌ ElevenLabs error:', error);
     });
 
     elevenLabsWs.on('close', () => {
-      console.log('🔗 ElevenLabs WebSocket closed');
+      console.log('🔗 ElevenLabs closed');
     });
 
   } catch (error) {
-    console.error('❌ Streaming error:', error);
+    console.error('❌ TTS error:', error);
   }
 };
 
 // ---------------------------------------------------------------------------------
-// WebSocket Server
+// WebSocket Server with IMPROVED conversation handling
 // ---------------------------------------------------------------------------------
 
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws) => {
-  console.log('🔌 New connection');
+  console.log('🔌 New WebSocket connection');
   
   let streamSid;
   let deepgramLive;
+  let isListening = false;
+  let isSpeaking = false;
+  
+  // Enhanced conversation history with better context
   let conversationHistory = [
     { 
       role: "system", 
-      content: "You are Jana, a helpful AI assistant speaking in Czech. Be very brief - maximum 10 words per response for phone calls." 
+      content: `You are Jana, a helpful and friendly AI assistant speaking in Czech. You are having a phone conversation, so:
+
+- Keep responses conversational and natural
+- Respond in 1-2 sentences maximum  
+- Be helpful and ask follow-up questions when appropriate
+- Speak as if you're a real person having a phone chat
+- Current date: August 3, 2025
+- You can help with questions, provide information, or just have a friendly chat
+
+Examples of good responses:
+- "Jak se máte dnes?"
+- "To je zajímavé! Můžete mi říct víc?"
+- "Určitě vám s tím pomohu."` 
     }
   ];
 
   const initializeDeepgram = () => {
     deepgramLive = deepgram.listen.live({
       model: 'nova-2',
-      language: 'cs',
+      language: 'cs',                    // Czech language
       smart_format: true,
-      interim_results: false
+      interim_results: false,            // Only final results to avoid duplicates
+      punctuate: true,
+      profanity_filter: false,
+      redact: false,
+      diarize: false,
+      multichannel: false,
+      alternatives: 1,
+      tier: 'nova'                       // Best quality tier
     });
 
     deepgramLive.on('open', () => {
-      console.log('🎯 Deepgram connected');
+      console.log('🎯 Deepgram connected and ready');
+      isListening = true;
     });
 
     deepgramLive.on('transcript', async (data) => {
+      // Only process if we're not currently speaking
+      if (isSpeaking) {
+        console.log('🔇 Ignoring transcript while AI is speaking');
+        return;
+      }
+      
       const transcript = data.channel.alternatives[0].transcript;
       
-      if (transcript && transcript.trim()) {
-        console.log(`👤 User: "${transcript}"`);
+      if (transcript && transcript.trim() && transcript.length > 2) {
+        console.log(`👤 User said: "${transcript}"`);
         
+        // Set speaking flag to prevent interruption
+        isSpeaking = true;
+        
+        // Add user message to conversation
         conversationHistory.push({ role: "user", content: transcript });
         
-        if (conversationHistory.length > 6) {
-          conversationHistory = [conversationHistory[0], ...conversationHistory.slice(-4)];
+        // Keep conversation history manageable (last 8 messages + system)
+        if (conversationHistory.length > 9) {
+          conversationHistory = [conversationHistory[0], ...conversationHistory.slice(-8)];
         }
 
         try {
+          console.log('🤖 Generating AI response...');
+          
           const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
+            model: "gpt-4o",                // Better model for conversation
             messages: conversationHistory,
-            max_tokens: 30,
-            temperature: 0.7
+            max_tokens: 80,                 // Allow slightly longer responses
+            temperature: 0.8,               // More natural/conversational
+            presence_penalty: 0.3,          // Encourage variety
+            frequency_penalty: 0.3          // Reduce repetition
           });
 
           const aiResponse = completion.choices[0].message.content.trim();
-          console.log(`🤖 AI: "${aiResponse}"`);
+          console.log(`🤖 AI Response: "${aiResponse}"`);
           
+          // Add AI response to history
           conversationHistory.push({ role: "assistant", content: aiResponse });
           
+          // Generate speech
           await streamTextToSpeech(aiResponse, streamSid, ws);
 
         } catch (error) {
           console.error('❌ OpenAI error:', error);
-          await streamTextToSpeech("Promiňte, chyba.", streamSid, ws);
+          await streamTextToSpeech("Promiňte, došlo k technické chybě. Zkuste to prosím znovu.", streamSid, ws);
         }
+      } else {
+        console.log('🔇 Ignoring short/empty transcript');
       }
     });
 
     deepgramLive.on('error', (error) => {
       console.error('❌ Deepgram error:', error);
+      isListening = false;
+    });
+
+    deepgramLive.on('close', () => {
+      console.log('🔴 Deepgram connection closed');
+      isListening = false;
     });
   };
 
@@ -214,17 +263,29 @@ wss.on('connection', (ws) => {
         case 'start':
           streamSid = msg.start.streamSid;
           console.log(`📞 Stream started: ${streamSid}`);
+          console.log(`🎵 Audio format: ${JSON.stringify(msg.start.mediaFormat)}`);
           
+          // Initialize speech recognition
           initializeDeepgram();
           
-          // Simple welcome
-          await streamTextToSpeech("Ahoj! Jsem Jana.", streamSid, ws);
+          // Welcome message
+          isSpeaking = true;
+          await streamTextToSpeech("Dobrý den! Jsem Jana, vaše AI asistentka. Jak vám dnes mohu pomoci?", streamSid, ws);
           break;
           
         case 'media':
-          if (deepgramLive && deepgramLive.getReadyState() === 1) {
+          // Forward audio to Deepgram only if we're listening and not speaking
+          if (deepgramLive && deepgramLive.getReadyState() === 1 && isListening && !isSpeaking) {
             const audioData = Buffer.from(msg.media.payload, 'base64');
             deepgramLive.send(audioData);
+          }
+          break;
+          
+        case 'mark':
+          // When our speech is complete, start listening again
+          if (msg.mark && msg.mark.name === 'speech_complete') {
+            console.log('🎤 AI finished speaking, listening for user...');
+            isSpeaking = false;
           }
           break;
           
@@ -233,10 +294,14 @@ wss.on('connection', (ws) => {
           if (deepgramLive) {
             deepgramLive.finish();
           }
+          isListening = false;
           break;
+          
+        default:
+          console.log(`📨 Event: ${msg.event}`);
       }
     } catch (error) {
-      console.error('❌ Message error:', error);
+      console.error('❌ Message processing error:', error);
     }
   });
 
@@ -245,6 +310,7 @@ wss.on('connection', (ws) => {
     if (deepgramLive) {
       deepgramLive.finish();
     }
+    isListening = false;
   });
 
   ws.on('error', (error) => {
@@ -257,12 +323,15 @@ wss.on('connection', (ws) => {
 // ---------------------------------------------------------------------------------
 
 server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📞 TwiML: http://localhost:${PORT}/twiml`);
-  console.log('🎯 Fixed ElevenLabs streaming ready!');
+  console.log(`🚀 Full AI Conversational Agent running on port ${PORT}`);
+  console.log(`📞 TwiML endpoint: http://localhost:${PORT}/twiml`);
+  console.log('🎯 Ready for natural conversations!');
 });
 
 process.on('SIGINT', () => {
-  console.log('\n🛑 Shutting down...');
-  server.close(() => process.exit(0));
+  console.log('\n🛑 Shutting down gracefully...');
+  server.close(() => {
+    console.log('✅ Server closed');
+    process.exit(0);
+  });
 });
