@@ -79,7 +79,7 @@ wss.on('connection', (ws) => {
     };
     const body = JSON.stringify({
         text: text,
-        model_id: "eleven_multilingual_v2",
+        model_id: "eleven_multilingual_v1", // Using v1 model for potentially better ulaw compatibility
         output_format: "ulaw_8000"
     });
 
