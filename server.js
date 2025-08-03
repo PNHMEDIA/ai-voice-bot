@@ -71,6 +71,9 @@ wss.on('connection', (ws) => {
     if (!text || !streamSid) return;
     console.log(`AI Speaking: "${text}"`);
     
+    // Clear any audio from the buffer before we start speaking
+    ws.send(JSON.stringify({ event: "clear", streamSid: streamSid }));
+
     const elevenLabsUrl = `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`;
     const headers = {
         "Content-Type": "application/json",
@@ -78,8 +81,8 @@ wss.on('connection', (ws) => {
     };
     const body = JSON.stringify({
         text: text,
-        model_id: "eleven_multilingual_v2",
-        output_format: "mp3_44100_128" // Switched to a standard MP3 format
+        model_id: "eleven_multilingual_v1", // Using v1 model for maximum stability
+        output_format: "ulaw_8000" // The required telephone format
     });
 
     try {
@@ -96,11 +99,6 @@ wss.on('connection', (ws) => {
                 console.log("ElevenLabs stream finished.");
                 break;
             }
-            // Since we are now receiving MP3 data, we need to tell Twilio it's a different format.
-            // We do this by sending a "media" event with the correct format.
-            // However, Twilio's media stream expects ulaw. The best approach is to clear the buffer
-            // and send a TwiML <Play> command with the audio URL.
-            // For simplicity in this step, we will continue streaming, as Twilio can sometimes handle it.
             const audioBase64 = Buffer.from(value).toString('base64');
             const mediaMessage = {
                 event: "media",
