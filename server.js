@@ -32,9 +32,9 @@ if (!DEEPGRAM_API_KEY || !OPENAI_API_KEY || !ELEVENLABS_API_KEY || !ELEVENLABS_V
 // --- Initialize External Services ---
 const deepgram = createClient(DEEPGRAM_API_KEY);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
-const voice = new ElevenLabs({
+// Initialize the ElevenLabs client without a default voiceId for more robust calls
+const elevenLabsClient = new ElevenLabs({
   apiKey: ELEVENLABS_API_KEY,
-  voiceId: ELEVENLABS_VOICE_ID,
 });
 
 const app = express();
@@ -75,7 +75,9 @@ wss.on('connection', (ws) => {
     if (!text || !streamSid) return;
     console.log(`AI Speaking: "${text}"`);
     try {
-      const ttsStream = await voice.textToSpeechStream({
+      // Use the new client and pass all parameters directly in the call
+      const ttsStream = await elevenLabsClient.textToSpeechStream({
+        voiceId: ELEVENLABS_VOICE_ID, // Specify the voice for this stream
         text: text,
         modelId: "eleven_multilingual_v2",
       });
