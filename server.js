@@ -93,20 +93,37 @@ wss.on('connection', (ws) => {
         console.log("Successfully connected to ElevenLabs stream.");
 
         const reader = response.body.getReader();
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-                console.log("ElevenLabs stream finished.");
-                break;
-            }
-            const audioBase64 = Buffer.from(value).toString('base64');
-            const mediaMessage = {
-                event: "media",
-                streamSid: streamSid,
-                media: { payload: audioBase64 },
-            };
-            ws.send(JSON.stringify(mediaMessage));
-        }
+        let audioBuffer = Buffer.alloc(0);
+
+while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    audioBuffer = Buffer.concat([audioBuffer, Buffer.from(value)]);
+
+    while (audioBuffer.length >= 160) {
+        const chunk = audioBuffer.slice(0, 160);
+        audioBuffer = audioBuffer.slice(160);
+        const payload = chunk.toString('base64');
+        ws.send(JSON.stringify({
+            event: "media",
+            streamSid: streamSid,
+            media: { payload }
+        }));
+    }
+}
+
+// After stream ends, send any remaining audio (optional)
+if (audioBuffer.length > 0) {
+    // Optionally pad with silence if needed:
+    const padded = Buffer.concat([audioBuffer, Buffer.alloc(160 - audioBuffer.length)]);
+    const payload = padded.toString('base64');
+    ws.send(JSON.stringify({
+        event: "media",
+        streamSid: streamSid,
+        media: { payload }
+    }));
+}
+
         
         console.log("Sending 'bot_finished_speaking' mark.");
         ws.send(JSON.stringify({ event: "mark", streamSid: streamSid, mark: { name: "bot_finished_speaking" }}));
