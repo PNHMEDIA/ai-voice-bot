@@ -72,39 +72,46 @@ wss.on('connection', (ws) => {
     if (!text || !streamSid) return;
     console.log(`AI Speaking: "${text}"`);
     
-    // Direct API call to ElevenLabs using fetch
     const elevenLabsUrl = `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`;
     const headers = {
-      "Content-Type": "application/json",
-      "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+        "xi-api-key": ELEVENLABS_API_KEY,
     };
     const body = JSON.stringify({
-      text: text,
-      model_id: "eleven_multilingual_v2",
-      output_format: "ulaw_8000" // CRUCIAL: Request audio in the format Twilio needs
+        text: text,
+        model_id: "eleven_multilingual_v2",
+        output_format: "ulaw_8000"
     });
 
     try {
-      const response = await fetch(elevenLabsUrl, { method: 'POST', headers: headers, body: body });
-      if (!response.ok) {
-        throw new Error(`ElevenLabs API returned an error: ${response.status} ${response.statusText}`);
-      }
-      
-      // The response body is a stream. We read it in chunks.
-      for await (const chunk of response.body) {
-        const audioBase64 = chunk.toString('base64');
-        const mediaMessage = {
-          event: "media",
-          streamSid: streamSid,
-          media: { payload: audioBase64 },
-        };
-        ws.send(JSON.stringify(mediaMessage));
-      }
-      
-      // Send a mark message to indicate the end of the bot's speech
-      ws.send(JSON.stringify({ event: "mark", streamSid: streamSid, mark: { name: "bot_finished_speaking" }}));
+        const response = await fetch(elevenLabsUrl, { method: 'POST', headers: headers, body: body });
+        if (!response.ok) {
+            throw new Error(`ElevenLabs API returned an error: ${response.status} ${response.statusText}`);
+        }
+        console.log("Successfully connected to ElevenLabs stream.");
+
+        const reader = response.body.getReader();
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+                console.log("ElevenLabs stream finished.");
+                break;
+            }
+            // value is a Uint8Array.
+            const audioBase64 = Buffer.from(value).toString('base64');
+            const mediaMessage = {
+                event: "media",
+                streamSid: streamSid,
+                media: { payload: audioBase64 },
+            };
+            ws.send(JSON.stringify(mediaMessage));
+        }
+        
+        console.log("Sending 'bot_finished_speaking' mark.");
+        ws.send(JSON.stringify({ event: "mark", streamSid: streamSid, mark: { name: "bot_finished_speaking" }}));
+
     } catch (error) {
-      console.error("Error during Text-to-Speech streaming:", error);
+        console.error("Error during Text-to-Speech streaming:", error);
     }
   };
 
