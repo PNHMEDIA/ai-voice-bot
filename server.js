@@ -67,7 +67,7 @@ wss.on('connection', (ws) => {
   let conversationHistory = [{ role: "system", content: "You are a helpful and conversational AI assistant speaking in Czech. Your name is Jana. Be concise and friendly. The current date is August 3, 2025." }];
 
   // --- Function to stream text to ElevenLabs and then to Twilio ---
-  // Fixed streamTextToSpeech function - addresses the audioBase64 ReferenceError
+  // FIXED: streamTextToSpeech function based on ElevenLabs + Twilio best practices
 const streamTextToSpeech = async (text) => {
     if (!text || !streamSid) return;
     console.log(`AI Speaking: "${text}"`);
@@ -75,51 +75,64 @@ const streamTextToSpeech = async (text) => {
     // Clear any audio from the buffer before we start speaking
     ws.send(JSON.stringify({ event: "clear", streamSid: streamSid }));
   
-    const elevenLabsUrl = `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`;
+    const elevenLabsUrl = `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`;
     const headers = {
         "Content-Type": "application/json",
         "xi-api-key": ELEVENLABS_API_KEY,
     };
+    
+    // KEY FIX: Use correct format and settings for Twilio
     const body = JSON.stringify({
         text: text,
-        model_id: "eleven_multilingual_v1", // Keep v1 for now for stability
+        model_id: "eleven_turbo_v2", // More stable for streaming
         voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75
+            stability: 0.71,           // Higher stability reduces artifacts
+            similarity_boost: 0.5,     // Lower similarity boost for cleaner audio
+            style: 0.0,                // No style variations
+            use_speaker_boost: false   // Disable speaker boost for telephony
         },
-        output_format: "ulaw_8000" // Keep original format first
+        output_format: "mp3_22050_32"  // CRITICAL: Use MP3 format for Twilio compatibility
     });
   
     try {
-        const response = await fetch(elevenLabsUrl, { method: 'POST', headers: headers, body: body });
+        const response = await fetch(elevenLabsUrl, { 
+            method: 'POST', 
+            headers: headers, 
+            body: body 
+        });
+        
         if (!response.ok) {
             const errorText = await response.text();
             throw new Error(`ElevenLabs API error: ${response.status} ${response.statusText} - ${errorText}`);
         }
-        console.log("Successfully connected to ElevenLabs stream.");
+        console.log("Successfully connected to ElevenLabs.");
   
-        const reader = response.body.getReader();
+        // Convert the entire response to audio buffer first
+        const audioArrayBuffer = await response.arrayBuffer();
+        const audioBuffer = Buffer.from(audioArrayBuffer);
         
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-                console.log("ElevenLabs stream finished.");
-                break;
-            }
+        // CRITICAL FIX: Send audio in properly sized chunks for Twilio
+        const chunkSize = 8000; // Optimal chunk size for Twilio Media Streams
+        let offset = 0;
+        
+        while (offset < audioBuffer.length) {
+            const chunk = audioBuffer.slice(offset, offset + chunkSize);
+            const audioBase64 = chunk.toString('base64');
             
-            // Convert audio chunk to base64 - this is where the error was occurring
-            if (value && value.length > 0) {
-                const audioChunkBase64 = Buffer.from(value).toString('base64');
-                const mediaMessage = {
-                    event: "media",
-                    streamSid: streamSid,
-                    media: { payload: audioChunkBase64 },
-                };
-                ws.send(JSON.stringify(mediaMessage));
-            }
+            const mediaMessage = {
+                event: "media",
+                streamSid: streamSid,
+                media: { payload: audioBase64 },
+            };
+            
+            ws.send(JSON.stringify(mediaMessage));
+            offset += chunkSize;
+            
+            // Small delay to prevent overwhelming Twilio's buffer
+            await new Promise(resolve => setTimeout(resolve, 20));
         }
         
-        console.log("Sending 'bot_finished_speaking' mark.");
+        console.log("Audio streaming completed.");
         ws.send(JSON.stringify({ 
             event: "mark", 
             streamSid: streamSid, 
@@ -129,6 +142,73 @@ const streamTextToSpeech = async (text) => {
     } catch (error) {
         console.error("Error during Text-to-Speech streaming:", error);
         console.error("Full error details:", error.message);
+    }
+  };
+  
+  // ALTERNATIVE SOLUTION: If MP3 still causes issues, try this streaming version
+  const streamTextToSpeechAlternative = async (text) => {
+    if (!text || !streamSid) return;
+    console.log(`AI Speaking: "${text}"`);
+    
+    ws.send(JSON.stringify({ event: "clear", streamSid: streamSid }));
+  
+    const elevenLabsUrl = `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`;
+    const headers = {
+        "Content-Type": "application/json",
+        "xi-api-key": ELEVENLABS_API_KEY,
+    };
+    
+    const body = JSON.stringify({
+        text: text,
+        model_id: "eleven_turbo_v2",
+        voice_settings: {
+            stability: 0.75,           // Even higher stability
+            similarity_boost: 0.3,     // Lower for cleaner telephony audio
+            use_speaker_boost: false
+        },
+        output_format: "pcm_16000"     // Raw PCM might work better than ulaw
+    });
+  
+    try {
+        const response = await fetch(elevenLabsUrl, { 
+            method: 'POST', 
+            headers: headers, 
+            body: body 
+        });
+        
+        if (!response.ok) {
+            throw new Error(`ElevenLabs API error: ${response.status}`);
+        }
+  
+        const reader = response.body.getReader();
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            if (value && value.length > 0) {
+                // Convert PCM to the format Twilio expects
+                const audioBase64 = Buffer.from(value).toString('base64');
+                
+                ws.send(JSON.stringify({
+                    event: "media",
+                    streamSid: streamSid,
+                    media: { payload: audioBase64 },
+                }));
+                
+                // Crucial delay for real-time streaming
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+        }
+        
+        ws.send(JSON.stringify({ 
+            event: "mark", 
+            streamSid: streamSid, 
+            mark: { name: "bot_finished_speaking" }
+        }));
+  
+    } catch (error) {
+        console.error("Streaming error:", error);
     }
   };
 
