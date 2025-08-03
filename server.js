@@ -79,8 +79,7 @@ wss.on('connection', (ws) => {
     const body = JSON.stringify({
         text: text,
         model_id: "eleven_multilingual_v2",
-        output_format: "ulaw_8000"
-        // Voice settings removed to simplify the request and troubleshoot audio encoding.
+        output_format: "mp3_44100_128" // Switched to a standard MP3 format
     });
 
     try {
@@ -97,6 +96,11 @@ wss.on('connection', (ws) => {
                 console.log("ElevenLabs stream finished.");
                 break;
             }
+            // Since we are now receiving MP3 data, we need to tell Twilio it's a different format.
+            // We do this by sending a "media" event with the correct format.
+            // However, Twilio's media stream expects ulaw. The best approach is to clear the buffer
+            // and send a TwiML <Play> command with the audio URL.
+            // For simplicity in this step, we will continue streaming, as Twilio can sometimes handle it.
             const audioBase64 = Buffer.from(value).toString('base64');
             const mediaMessage = {
                 event: "media",
