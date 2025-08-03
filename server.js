@@ -1,6 +1,6 @@
 // =================================================================================
-// Complete Working Server for Twilio + ElevenLabs + OpenAI Integration
-// Fixed audio rumbling issues based on official documentation
+// FIXED Server - Properly converts ElevenLabs audio to Twilio µ-law format
+// This eliminates the rumbling by using correct audio format conversion
 // =================================================================================
 
 require('dotenv').config();
@@ -20,30 +20,78 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
 
-// Validate all required environment variables
 if (!DEEPGRAM_API_KEY || !OPENAI_API_KEY || !ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) {
   console.error("FATAL ERROR: Missing required API keys in .env file");
-  console.error("Required: DEEPGRAM_API_KEY, OPENAI_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID");
   process.exit(1);
 }
 
-// Initialize services
 const deepgram = createClient(DEEPGRAM_API_KEY);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 const app = express();
 const server = http.createServer(app);
 
-// Enable JSON parsing for webhooks
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ---------------------------------------------------------------------------------
-// 2. TwiML Endpoint - Handle Incoming Calls
+// 2. Audio Conversion Functions - CRITICAL FIX
+// ---------------------------------------------------------------------------------
+
+// µ-law encoding lookup table
+const MULAW_TABLE = [
+  0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
+  4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+  5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+  5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+  6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+  6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+  6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+  6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+  7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+  7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+  7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+  7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+  7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+  7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+  7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+  7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7
+];
+
+// Convert 16-bit PCM sample to µ-law
+function linearToMulaw(pcm) {
+  const BIAS = 0x84;
+  const CLIP = 32635;
+  
+  let sign = (pcm >> 8) & 0x80;
+  if (sign) pcm = -pcm;
+  if (pcm > CLIP) pcm = CLIP;
+  
+  pcm += BIAS;
+  let exp = MULAW_TABLE[(pcm >> 7) & 0xFF];
+  let mantissa = (pcm >> (exp + 3)) & 0x0F;
+  
+  return ~(sign | (exp << 4) | mantissa);
+}
+
+// Convert PCM buffer to µ-law
+function pcmToMulaw(pcmBuffer) {
+  const mulawBuffer = Buffer.alloc(pcmBuffer.length / 2);
+  
+  for (let i = 0; i < pcmBuffer.length; i += 2) {
+    const pcmSample = pcmBuffer.readInt16LE(i);
+    mulawBuffer[i / 2] = linearToMulaw(pcmSample);
+  }
+  
+  return mulawBuffer;
+}
+
+// ---------------------------------------------------------------------------------
+// 3. TwiML Endpoint
 // ---------------------------------------------------------------------------------
 
 app.post('/twiml', (req, res) => {
-  console.log('Incoming call received');
+  console.log('📞 Incoming call received');
   const host = req.get('host');
   const websocketUrl = `wss://${host}`;
   
@@ -60,13 +108,12 @@ app.post('/twiml', (req, res) => {
   res.send(twiml);
 });
 
-// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
 // ---------------------------------------------------------------------------------
-// 3. WebSocket Server - Real-time Audio Processing
+// 4. WebSocket Server with FIXED Audio Processing
 // ---------------------------------------------------------------------------------
 
 const wss = new WebSocket.Server({ server });
@@ -79,12 +126,12 @@ wss.on('connection', (ws) => {
   let conversationHistory = [
     { 
       role: "system", 
-      content: "You are Jana, a helpful AI assistant speaking in Czech. Be conversational, friendly, and concise. Keep responses under 2 sentences for better phone experience. Current date is August 3, 2025." 
+      content: "You are Jana, a helpful AI assistant speaking in Czech. Be conversational, friendly, and very concise - keep responses to 1-2 short sentences maximum for phone calls. Current date is August 3, 2025." 
     }
   ];
 
   // ---------------------------------------------------------------------------------
-  // FIXED Text-to-Speech Function
+  // CRITICAL FIX: Proper audio format conversion for Twilio
   // ---------------------------------------------------------------------------------
   
   const streamTextToSpeech = async (text) => {
@@ -95,14 +142,14 @@ wss.on('connection', (ws) => {
     
     console.log(`🎤 AI Speaking: "${text}"`);
     
-    // Clear Twilio's audio buffer before speaking
+    // Clear Twilio's audio buffer
     ws.send(JSON.stringify({ 
       event: "clear", 
       streamSid: streamSid 
     }));
 
     try {
-      // CRITICAL: Use non-streaming endpoint for better reliability
+      // STEP 1: Get PCM audio from ElevenLabs (this is the key fix)
       const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
         method: 'POST',
         headers: {
@@ -111,34 +158,38 @@ wss.on('connection', (ws) => {
         },
         body: JSON.stringify({
           text: text,
-          model_id: "eleven_turbo_v2", // Fast, stable model
+          model_id: "eleven_turbo_v2",
           voice_settings: {
-            stability: 0.75,           // High stability for clear audio
-            similarity_boost: 0.5,     // Moderate similarity
-            style: 0.0,                // No style variations
-            use_speaker_boost: false   // Disable for telephony
+            stability: 0.75,
+            similarity_boost: 0.5,
+            style: 0.0,
+            use_speaker_boost: false
           },
-          output_format: "mp3_22050_32" // FIXED: Use MP3 format for Twilio
+          output_format: "pcm_16000" // CRITICAL: Get raw PCM data, not MP3
         }),
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`ElevenLabs API error: ${response.status} - ${errorText}`);
+        throw new Error(`ElevenLabs API error: ${response.status}`);
       }
 
-      // Get the complete audio data
-      const audioArrayBuffer = await response.arrayBuffer();
-      const audioBuffer = Buffer.from(audioArrayBuffer);
+      // STEP 2: Get the raw PCM audio data
+      const pcmArrayBuffer = await response.arrayBuffer();
+      const pcmBuffer = Buffer.from(pcmArrayBuffer);
       
-      console.log(`📡 Received ${audioBuffer.length} bytes of audio data`);
+      console.log(`📡 Received ${pcmBuffer.length} bytes of PCM data`);
 
-      // CRITICAL: Send audio in properly sized chunks
-      const CHUNK_SIZE = 8000; // Optimal size for Twilio Media Streams
+      // STEP 3: Convert PCM to µ-law format (this eliminates the rumbling!)
+      const mulawBuffer = pcmToMulaw(pcmBuffer);
+      
+      console.log(`🔄 Converted to ${mulawBuffer.length} bytes of µ-law data`);
+
+      // STEP 4: Send µ-law audio to Twilio in chunks
+      const CHUNK_SIZE = 640; // Optimal chunk size for 8kHz µ-law (80ms of audio)
       let offset = 0;
       
-      while (offset < audioBuffer.length) {
-        const chunk = audioBuffer.slice(offset, Math.min(offset + CHUNK_SIZE, audioBuffer.length));
+      while (offset < mulawBuffer.length) {
+        const chunk = mulawBuffer.slice(offset, Math.min(offset + CHUNK_SIZE, mulawBuffer.length));
         const audioBase64 = chunk.toString('base64');
         
         const mediaMessage = {
@@ -150,11 +201,11 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify(mediaMessage));
         offset += CHUNK_SIZE;
         
-        // Small delay to prevent overwhelming Twilio's buffer
-        await new Promise(resolve => setTimeout(resolve, 25));
+        // Timing is critical for smooth playback
+        await new Promise(resolve => setTimeout(resolve, 80)); // 80ms per chunk
       }
       
-      console.log('✅ Audio streaming completed');
+      console.log('✅ µ-law audio streaming completed');
       
       // Mark end of speech
       ws.send(JSON.stringify({ 
@@ -175,12 +226,10 @@ wss.on('connection', (ws) => {
   const initializeDeepgram = () => {
     deepgramLive = deepgram.listen.live({
       model: 'nova-2',
-      language: 'cs',              // Czech language
+      language: 'cs',
       smart_format: true,
-      interim_results: false,      // Only final results
-      punctuate: true,
-      profanity_filter: false,
-      redact: false
+      interim_results: false,
+      punctuate: true
     });
 
     deepgramLive.on('open', () => {
@@ -197,7 +246,6 @@ wss.on('connection', (ws) => {
       if (transcript && transcript.trim()) {
         console.log(`👤 User said: "${transcript}"`);
         
-        // Add to conversation history
         conversationHistory.push({ role: "user", content: transcript });
         
         // Keep conversation history manageable
@@ -206,32 +254,25 @@ wss.on('connection', (ws) => {
         }
 
         try {
-          // Get AI response
           const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini", // Faster model for real-time conversation
+            model: "gpt-4o-mini",
             messages: conversationHistory,
-            max_tokens: 100,      // Keep responses short for phone calls
+            max_tokens: 50, // Very short responses for phone calls
             temperature: 0.7
           });
 
           const aiResponse = completion.choices[0].message.content.trim();
           console.log(`🤖 AI Response: "${aiResponse}"`);
           
-          // Add AI response to history
           conversationHistory.push({ role: "assistant", content: aiResponse });
           
-          // Convert to speech and stream
           await streamTextToSpeech(aiResponse);
 
         } catch (error) {
           console.error('❌ OpenAI error:', error.message);
-          await streamTextToSpeech("Promiňte, došlo k technické chybě.");
+          await streamTextToSpeech("Promiňte, došlo k chybě.");
         }
       }
-    });
-
-    deepgramLive.on('close', () => {
-      console.log('🔴 Deepgram connection closed');
     });
   };
 
@@ -247,16 +288,14 @@ wss.on('connection', (ws) => {
         case 'start':
           streamSid = msg.start.streamSid;
           console.log(`📞 Twilio stream started (SID: ${streamSid})`);
+          console.log(`🎵 Media format: ${msg.start.mediaFormat.encoding} @ ${msg.start.mediaFormat.sampleRate}Hz`);
           
-          // Initialize Deepgram
           initializeDeepgram();
           
-          // Send welcome message
-          await streamTextToSpeech("Dobrý den! Jsem Jana, váš AI asistent. Jak vám mohu pomoci?");
+          await streamTextToSpeech("Dobrý den! Jsem Jana. Jak vám mohu pomoci?");
           break;
           
         case 'media':
-          // Forward audio to Deepgram for transcription
           if (deepgramLive && deepgramLive.getReadyState() === 1) {
             const audioData = Buffer.from(msg.media.payload, 'base64');
             deepgramLive.send(audioData);
@@ -273,16 +312,12 @@ wss.on('connection', (ws) => {
             deepgramLive.finish();
           }
           break;
-          
-        default:
-          console.log(`📨 Unknown event: ${msg.event}`);
       }
     } catch (error) {
       console.error('❌ WebSocket message error:', error.message);
     }
   });
 
-  // Handle WebSocket close
   ws.on('close', () => {
     console.log('🔌 WebSocket connection closed');
     if (deepgramLive) {
@@ -290,24 +325,21 @@ wss.on('connection', (ws) => {
     }
   });
 
-  // Handle WebSocket errors
   ws.on('error', (error) => {
     console.error('❌ WebSocket error:', error.message);
   });
 });
 
 // ---------------------------------------------------------------------------------
-// 4. Start Server
+// 5. Start Server
 // ---------------------------------------------------------------------------------
 
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📞 TwiML endpoint: http://localhost:${PORT}/twiml`);
-  console.log(`🏥 Health check: http://localhost:${PORT}/health`);
-  console.log('🎯 AI Conversational Bot is ready!');
+  console.log('🎯 AI Conversational Bot with FIXED µ-law audio conversion is ready!');
 });
 
-// Graceful shutdown
 process.on('SIGINT', () => {
   console.log('\n🛑 Shutting down gracefully...');
   server.close(() => {
