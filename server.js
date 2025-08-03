@@ -1,7 +1,7 @@
 // =================================================================================
-// Server-Side Code for Real-Time AI Voice Bot (Welcome Message)
+// Server-Side Code for Real-Time AI Voice Bot (Czech Welcome Message)
 // =================================================================================
-// This version uses ElevenLabs to stream a welcome message when the call connects.
+// This version uses ElevenLabs to stream a welcome message in Czech.
 
 // ---------------------------------------------------------------------------------
 // 1. Initialization and Configuration
@@ -74,10 +74,10 @@ wss.on('connection', (ws) => {
             voiceId: ELEVENLABS_VOICE_ID,
           });
 
-          // Generate the audio stream for our welcome message
+          // Generate the audio stream for our welcome message in Czech
           const welcomeStream = await voice.textToSpeechStream({
-            text: "Hello! How can I help you today?",
-            modelId: "eleven_turbo_v2", // A fast, conversational model
+            text: "Dobrý den! Jak vám mohu pomoci?", // "Hello! How can I help you?" in Czech
+            modelId: "eleven_multilingual_v2", // Using a multilingual model for best results
           });
 
           // Pipe the audio from ElevenLabs back to the caller via Twilio
