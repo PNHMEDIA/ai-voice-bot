@@ -76,10 +76,10 @@ wss.on('connection', (ws) => {
     console.log(`AI Speaking: "${text}"`);
     try {
       // Use the new client and pass all parameters directly in the call
+      // SIMPLIFIED CALL: Removed the modelId to use the default model for the voice.
       const ttsStream = await elevenLabsClient.textToSpeechStream({
         voiceId: ELEVENLABS_VOICE_ID, // Specify the voice for this stream
         text: text,
-        modelId: "eleven_multilingual_v2",
       });
 
       for await (const chunk of ttsStream) {
