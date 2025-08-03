@@ -81,6 +81,7 @@ wss.on('connection', (ws) => {
     const body = JSON.stringify({
       text: text,
       model_id: "eleven_multilingual_v2",
+      output_format: "ulaw_8000" // CRUCIAL: Request audio in the format Twilio needs
     });
 
     try {
