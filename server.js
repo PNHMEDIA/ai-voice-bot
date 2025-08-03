@@ -3,6 +3,7 @@
 // =================================================================================
 // This version integrates Deepgram for Speech-to-Text and OpenAI for language
 // understanding to create a fully interactive AI assistant.
+// It now uses a direct `fetch` call to the ElevenLabs API for improved reliability.
 
 // ---------------------------------------------------------------------------------
 // 1. Initialization and Configuration
@@ -14,7 +15,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const { createClient } = require('@deepgram/sdk');
 const OpenAI = require('openai');
-const ElevenLabs = require('elevenlabs-node');
+// We no longer need the ElevenLabs library, but keep it in package.json for now.
 
 // --- Retrieve API Keys and Configuration ---
 const PORT = process.env.PORT || 8080;
@@ -32,10 +33,6 @@ if (!DEEPGRAM_API_KEY || !OPENAI_API_KEY || !ELEVENLABS_API_KEY || !ELEVENLABS_V
 // --- Initialize External Services ---
 const deepgram = createClient(DEEPGRAM_API_KEY);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
-// Initialize the ElevenLabs client without a default voiceId for more robust calls
-const elevenLabsClient = new ElevenLabs({
-  apiKey: ELEVENLABS_API_KEY,
-});
 
 const app = express();
 const server = http.createServer(app);
@@ -74,15 +71,26 @@ wss.on('connection', (ws) => {
   const streamTextToSpeech = async (text) => {
     if (!text || !streamSid) return;
     console.log(`AI Speaking: "${text}"`);
-    try {
-      // Use the new client and pass all parameters directly in the call
-      // SIMPLIFIED CALL: Removed the modelId to use the default model for the voice.
-      const ttsStream = await elevenLabsClient.textToSpeechStream({
-        voiceId: ELEVENLABS_VOICE_ID, // Specify the voice for this stream
-        text: text,
-      });
+    
+    // Direct API call to ElevenLabs using fetch
+    const elevenLabsUrl = `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`;
+    const headers = {
+      "Content-Type": "application/json",
+      "xi-api-key": ELEVENLABS_API_KEY,
+    };
+    const body = JSON.stringify({
+      text: text,
+      model_id: "eleven_multilingual_v2",
+    });
 
-      for await (const chunk of ttsStream) {
+    try {
+      const response = await fetch(elevenLabsUrl, { method: 'POST', headers: headers, body: body });
+      if (!response.ok) {
+        throw new Error(`ElevenLabs API returned an error: ${response.status} ${response.statusText}`);
+      }
+      
+      // The response body is a stream. We read it in chunks.
+      for await (const chunk of response.body) {
         const audioBase64 = chunk.toString('base64');
         const mediaMessage = {
           event: "media",
