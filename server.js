@@ -196,39 +196,39 @@ Odpověz jako skutečný člověk - přirozeně, s empatií, použij jméno poku
   }
 }
 
-// ---------------------------------------------------------------------------------
-// ELEVENLABS V3 + ANET 2.0 - Ultra-Natural Czech Speech
-// ---------------------------------------------------------------------------------
-
 const streamNaturalSpeech = async (text, streamSid, ws) => {
   if (!text || !streamSid) return;
   
-  console.log(`🎤 Jana (Anet 2.0 - v3): "${text}"`);
+  console.log(`🎤 Jana: "${text}"`);
   
   // Clear any existing audio immediately
   ws.send(JSON.stringify({ event: "clear", streamSid }));
 
   try {
-    // ElevenLabs v3 with Anet 2.0 streaming URL
-    const streamingUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream-input?model_id=eleven_v3&output_format=ulaw_8000`;
+    // FALLBACK: Try v3 first, fallback to turbo_v2 if 403
+    let streamingUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream-input?model_id=eleven_v3&output_format=ulaw_8000`;
     
     const elevenLabsWs = new WebSocket(streamingUrl, {
       headers: { 'xi-api-key': ELEVENLABS_API_KEY }
     });
 
+    let hasConnected = false;
+
     elevenLabsWs.on('open', () => {
-      // Optimized settings for Anet 2.0 + v3 model
+      console.log('✅ ElevenLabs v3 connected successfully');
+      hasConnected = true;
+      
+      // Send voice settings
       elevenLabsWs.send(JSON.stringify({
         text,
         voice_settings: {
-          stability: 0.4,            // Natural variation
-          similarity_boost: 0.75,    // Consistent voice
-          style: 1.0,               // Full expressiveness
-          use_speaker_boost: true    // Clear speech
+          stability: 0.4,
+          similarity_boost: 0.75,
+          style: 1.0,
+          use_speaker_boost: true
         }
       }));
       
-      // End text stream
       elevenLabsWs.send(JSON.stringify({ text: "" }));
     });
 
@@ -237,7 +237,6 @@ const streamNaturalSpeech = async (text, streamSid, ws) => {
         const response = JSON.parse(data);
         
         if (response.audio) {
-          // Stream audio immediately to Twilio
           ws.send(JSON.stringify({
             event: "media",
             streamSid,
@@ -257,12 +256,79 @@ const streamNaturalSpeech = async (text, streamSid, ws) => {
       }
     });
 
-    elevenLabsWs.on('error', (err) => {
-      console.error("❌ ElevenLabs WS error:", err);
+    elevenLabsWs.on('error', async (err) => {
+      console.error("❌ ElevenLabs v3 error:", err.message);
+      
+      // If 403 or connection error, try fallback
+      if (!hasConnected && (err.message.includes('403') || err.message.includes('Unexpected server response'))) {
+        console.log('🔄 Falling back to turbo_v2 model...');
+        await streamFallbackSpeech(text, streamSid, ws);
+      }
     });
 
   } catch (err) {
-    console.error("❌ Speech synthesis stream error:", err);
+    console.error("❌ Speech synthesis error:", err);
+    await streamFallbackSpeech(text, streamSid, ws);
+  }
+};
+
+// FALLBACK function with turbo_v2
+const streamFallbackSpeech = async (text, streamSid, ws) => {
+  try {
+    console.log('🔄 Using ElevenLabs turbo_v2 fallback');
+    
+    const streamingUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream-input?model_id=eleven_turbo_v2&output_format=ulaw_8000`;
+    
+    const elevenLabsWs = new WebSocket(streamingUrl, {
+      headers: { 'xi-api-key': ELEVENLABS_API_KEY }
+    });
+
+    elevenLabsWs.on('open', () => {
+      console.log('✅ ElevenLabs turbo_v2 connected');
+      
+      elevenLabsWs.send(JSON.stringify({
+        text,
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.8,
+          style: 0.0,
+          use_speaker_boost: true
+        }
+      }));
+      
+      elevenLabsWs.send(JSON.stringify({ text: "" }));
+    });
+
+    elevenLabsWs.on('message', (data) => {
+      try {
+        const response = JSON.parse(data);
+        
+        if (response.audio) {
+          ws.send(JSON.stringify({
+            event: "media",
+            streamSid,
+            media: { payload: response.audio }
+          }));
+        }
+        
+        if (response.isFinal) {
+          ws.send(JSON.stringify({
+            event: "mark",
+            streamSid,
+            mark: { name: "speech_done" }
+          }));
+        }
+      } catch (err) {
+        console.error("❌ Fallback audio error:", err);
+      }
+    });
+
+    elevenLabsWs.on('error', (err) => {
+      console.error("❌ Fallback TTS error:", err);
+    });
+
+  } catch (err) {
+    console.error("❌ Fallback speech error:", err);
   }
 };
 
@@ -359,7 +425,21 @@ wss.on('connection', (ws) => {
     });
 
     deepgramLive.on('error', (error) => {
-      console.error('❌ Deepgram error:', error);
+      console.error('❌ Deepgram error details:', {
+        message: error.message,
+        type: error.type || 'unknown',
+        timestamp: new Date().toISOString()
+      });
+      
+      // Try to reconnect Deepgram if needed
+      if (error.message && error.message.includes('connection')) {
+        console.log('🔄 Attempting Deepgram reconnection...');
+        setTimeout(() => {
+          if (deepgramLive.getReadyState() !== 1) {
+            initializeDeepgram();
+          }
+        }, 2000);
+      }
     });
   };
 
