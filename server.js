@@ -79,11 +79,8 @@ wss.on('connection', (ws) => {
     const body = JSON.stringify({
         text: text,
         model_id: "eleven_multilingual_v2",
-        output_format: "ulaw_8000",
-        voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75
-        }
+        output_format: "ulaw_8000"
+        // Voice settings removed to simplify the request and troubleshoot audio encoding.
     });
 
     try {
