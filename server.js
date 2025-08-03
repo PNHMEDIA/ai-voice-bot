@@ -108,39 +108,38 @@ wss.on('connection', (ws) => {
     }
   };
 
-  // --- Establish Deepgram Connection ---
-  deepgramLive = deepgram.listen.live({
-    model: 'nova-2',
-    language: 'cs', // Set language to Czech
-    smart_format: true,
-    interim_results: false, // We only want final transcripts
-  });
+  // --- DEBUGGING: Temporarily disable Deepgram to isolate the speaking function ---
+  // deepgramLive = deepgram.listen.live({
+  //   model: 'nova-2',
+  //   language: 'cs', // Set language to Czech
+  //   smart_format: true,
+  //   interim_results: false, // We only want final transcripts
+  // });
 
-  deepgramLive.on('open', () => console.log('Deepgram connection opened.'));
-  deepgramLive.on('error', (error) => console.error('Deepgram error:', error));
+  // deepgramLive.on('open', () => console.log('Deepgram connection opened.'));
+  // deepgramLive.on('error', (error) => console.error('Deepgram error:', error));
   
-  // --- Handle Transcripts from Deepgram ---
-  deepgramLive.on('transcript', async (data) => {
-    const transcript = data.channel.alternatives[0].transcript;
-    if (transcript) {
-      console.log(`User said: "${transcript}"`);
-      conversationHistory.push({ role: "user", content: transcript });
+  // deepgramLive.on('transcript', async (data) => {
+  //   const transcript = data.channel.alternatives[0].transcript;
+  //   if (transcript) {
+  //     console.log(`User said: "${transcript}"`);
+  //     conversationHistory.push({ role: "user", content: transcript });
 
-      try {
-        const completion = await openai.chat.completions.create({
-          model: "gpt-4o",
-          messages: conversationHistory,
-        });
+  //     try {
+  //       const completion = await openai.chat.completions.create({
+  //         model: "gpt-4o",
+  //         messages: conversationHistory,
+  //       });
 
-        const aiResponse = completion.choices[0].message.content;
-        conversationHistory.push({ role: "assistant", content: aiResponse });
-        await streamTextToSpeech(aiResponse);
+  //       const aiResponse = completion.choices[0].message.content;
+  //       conversationHistory.push({ role: "assistant", content: aiResponse });
+  //       await streamTextToSpeech(aiResponse);
 
-      } catch (error) {
-        console.error("Error getting response from OpenAI:", error);
-      }
-    }
-  });
+  //     } catch (error) {
+  //       console.error("Error getting response from OpenAI:", error);
+  //     }
+  //   }
+  // });
 
   // --- Handle Messages from Twilio ---
   ws.on('message', async (message) => {
@@ -152,25 +151,25 @@ wss.on('connection', (ws) => {
         await streamTextToSpeech("Dobrý den! U telefonu Jana, jak vám mohu pomoci?");
         break;
       case 'media':
-        // Forward incoming audio from Twilio to Deepgram
-        if (deepgramLive && deepgramLive.getReadyState() === 1) {
-          deepgramLive.send(Buffer.from(msg.media.payload, 'base64'));
-        }
+        // Forwarding to Deepgram is disabled for this test
+        // if (deepgramLive && deepgramLive.getReadyState() === 1) {
+        //   deepgramLive.send(Buffer.from(msg.media.payload, 'base64'));
+        // }
         break;
       case 'stop':
         console.log('Twilio media stream stopped.');
-        if (deepgramLive) {
-          deepgramLive.finish();
-        }
+        // if (deepgramLive) {
+        //   deepgramLive.finish();
+        // }
         break;
     }
   });
 
   ws.on('close', () => {
     console.log('WebSocket connection closed.');
-    if (deepgramLive) {
-      deepgramLive.finish();
-    }
+    // if (deepgramLive) {
+    //   deepgramLive.finish();
+    // }
   });
 });
 
