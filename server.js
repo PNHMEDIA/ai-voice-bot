@@ -1,42 +1,28 @@
 // =================================================================================
-// DEBUG VERSION - Better error handling to identify the issue
+// FINAL FIX - ElevenLabs streaming with proper query parameters
+// Based on official ElevenLabs + Twilio solution
 // =================================================================================
 
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
+const { createClient } = require('@deepgram/sdk');
+const OpenAI = require('openai');
 
-// Basic setup first
 const PORT = process.env.PORT || 8080;
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
 
-console.log('🚀 Starting server...');
-console.log('📋 Environment check:');
-console.log(`- PORT: ${PORT}`);
-console.log(`- DEEPGRAM_API_KEY: ${process.env.DEEPGRAM_API_KEY ? 'Set' : 'Missing'}`);
-console.log(`- OPENAI_API_KEY: ${process.env.OPENAI_API_KEY ? 'Set' : 'Missing'}`);
-console.log(`- ELEVENLABS_API_KEY: ${process.env.ELEVENLABS_API_KEY ? 'Set' : 'Missing'}`);
-console.log(`- ELEVENLABS_VOICE_ID: ${process.env.ELEVENLABS_VOICE_ID ? 'Set' : 'Missing'}`);
-
-// Initialize services with error handling
-let deepgram, openai;
-
-try {
-  const { createClient } = require('@deepgram/sdk');
-  const OpenAI = require('openai');
-  
-  if (process.env.DEEPGRAM_API_KEY) {
-    deepgram = createClient(process.env.DEEPGRAM_API_KEY);
-    console.log('✅ Deepgram initialized');
-  }
-  
-  if (process.env.OPENAI_API_KEY) {
-    openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    console.log('✅ OpenAI initialized');
-  }
-} catch (error) {
-  console.error('❌ Error initializing services:', error.message);
+if (!DEEPGRAM_API_KEY || !OPENAI_API_KEY || !ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) {
+  console.error("Missing required API keys");
+  process.exit(1);
 }
+
+const deepgram = createClient(DEEPGRAM_API_KEY);
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 const app = express();
 const server = http.createServer(app);
@@ -44,186 +30,221 @@ const server = http.createServer(app);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Basic error handling middleware
-app.use((error, req, res, next) => {
-  console.error('❌ Express error:', error);
-  res.status(500).json({ error: 'Internal server error', message: error.message });
-});
-
 // ---------------------------------------------------------------------------------
-// Simplified TwiML Endpoint
+// TwiML Endpoint
 // ---------------------------------------------------------------------------------
 
 app.post('/twiml', (req, res) => {
-  try {
-    console.log('📞 Incoming call received');
-    const host = req.get('host');
-    const websocketUrl = `wss://${host}`;
-    
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+  console.log('📞 Incoming call');
+  const host = req.get('host');
+  const websocketUrl = `wss://${host}`;
+  
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
     <Stream url="${websocketUrl}" />
   </Connect>
 </Response>`;
-    
-    res.type('text/xml');
-    res.send(twiml);
-    console.log('✅ TwiML response sent');
-  } catch (error) {
-    console.error('❌ TwiML endpoint error:', error);
-    res.status(500).send('Error');
-  }
+  
+  res.type('text/xml');
+  res.send(twiml);
 });
 
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    env: {
-      deepgram: !!process.env.DEEPGRAM_API_KEY,
-      openai: !!process.env.OPENAI_API_KEY,
-      elevenlabs: !!process.env.ELEVENLABS_API_KEY,
-      voiceId: !!process.env.ELEVENLABS_VOICE_ID
-    }
-  });
+  res.json({ status: 'OK' });
 });
 
 // ---------------------------------------------------------------------------------
-// Simplified Audio Conversion (without complex μ-law for now)
+// FIXED: ElevenLabs streaming with proper WebSocket and query params
 // ---------------------------------------------------------------------------------
 
-const simpleTextToSpeech = async (text, streamSid, ws) => {
-  if (!text || !streamSid) {
-    console.log('❌ No text or streamSid provided');
-    return;
-  }
+const streamTextToSpeech = async (text, streamSid, ws) => {
+  if (!text || !streamSid) return;
   
-  console.log(`🎤 AI Speaking: "${text}"`);
+  console.log(`🎤 Speaking: "${text}"`);
   
-  try {
-    // Clear buffer first
-    ws.send(JSON.stringify({ 
-      event: "clear", 
-      streamSid: streamSid 
-    }));
+  // Clear Twilio buffer
+  ws.send(JSON.stringify({ event: "clear", streamSid }));
 
-    // Try the simplest approach first - direct μ-law from ElevenLabs
-    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`, {
-      method: 'POST',
+  try {
+    // CRITICAL FIX: Use ElevenLabs streaming WebSocket with proper query params
+    const streamingUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream-input?model_id=eleven_turbo_v2&output_format=ulaw_8000`;
+    
+    const elevenLabsWs = new WebSocket(streamingUrl, {
       headers: {
-        'Content-Type': 'application/json',
-        'xi-api-key': process.env.ELEVENLABS_API_KEY,
-      },
-      body: JSON.stringify({
-        text: text,
-        model_id: "eleven_turbo_v2",
-        voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.5
-        },
-        output_format: "ulaw_8000" // Try direct μ-law format
-      }),
+        'xi-api-key': ELEVENLABS_API_KEY
+      }
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`ElevenLabs error: ${response.status} - ${errorText}`);
-    }
+    elevenLabsWs.on('open', () => {
+      console.log('🔗 ElevenLabs WebSocket connected');
+      
+      // Send the text to convert
+      elevenLabsWs.send(JSON.stringify({
+        text: text,
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.5,
+          style: 0.0,
+          use_speaker_boost: false
+        },
+        generation_config: {
+          chunk_length_schedule: [120, 160, 250, 290]
+        }
+      }));
+      
+      // Signal end of input
+      elevenLabsWs.send(JSON.stringify({ text: "" }));
+    });
 
-    const audioBuffer = await response.arrayBuffer();
-    const audioData = Buffer.from(audioBuffer);
-    
-    console.log(`📡 Received ${audioData.length} bytes of μ-law audio`);
+    elevenLabsWs.on('message', (data) => {
+      try {
+        const response = JSON.parse(data);
+        
+        if (response.audio) {
+          // Direct μ-law audio from ElevenLabs - send straight to Twilio
+          const mediaMessage = {
+            event: "media",
+            streamSid: streamSid,
+            media: { payload: response.audio }
+          };
+          ws.send(JSON.stringify(mediaMessage));
+        }
+        
+        if (response.isFinal) {
+          console.log('✅ ElevenLabs streaming complete');
+          ws.send(JSON.stringify({ 
+            event: "mark", 
+            streamSid, 
+            mark: { name: "speech_complete" }
+          }));
+        }
+      } catch (error) {
+        console.error('❌ ElevenLabs message parse error:', error);
+      }
+    });
 
-    // Send in small chunks
-    const CHUNK_SIZE = 640;
-    let offset = 0;
-    
-    while (offset < audioData.length) {
-      const chunk = audioData.slice(offset, Math.min(offset + CHUNK_SIZE, audioData.length));
-      const audioBase64 = chunk.toString('base64');
-      
-      const mediaMessage = {
-        event: "media",
-        streamSid: streamSid,
-        media: { payload: audioBase64 }
-      };
-      
-      ws.send(JSON.stringify(mediaMessage));
-      offset += CHUNK_SIZE;
-      
-      await new Promise(resolve => setTimeout(resolve, 80));
-    }
-    
-    console.log('✅ Audio streaming completed');
-    
-    ws.send(JSON.stringify({ 
-      event: "mark", 
-      streamSid: streamSid, 
-      mark: { name: "speech_complete" }
-    }));
+    elevenLabsWs.on('error', (error) => {
+      console.error('❌ ElevenLabs WebSocket error:', error);
+    });
+
+    elevenLabsWs.on('close', () => {
+      console.log('🔗 ElevenLabs WebSocket closed');
+    });
 
   } catch (error) {
-    console.error('❌ Text-to-Speech error:', error);
-    console.error('Full error:', error.stack);
+    console.error('❌ Streaming error:', error);
   }
 };
 
 // ---------------------------------------------------------------------------------
-// Simplified WebSocket Server
+// WebSocket Server
 // ---------------------------------------------------------------------------------
 
-const wss = new WebSocket.Server({ 
-  server,
-  perMessageDeflate: false 
-});
+const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws) => {
-  console.log('🔌 New WebSocket connection');
+  console.log('🔌 New connection');
   
   let streamSid;
   let deepgramLive;
+  let conversationHistory = [
+    { 
+      role: "system", 
+      content: "You are Jana, a helpful AI assistant speaking in Czech. Be very brief - maximum 10 words per response for phone calls." 
+    }
+  ];
+
+  const initializeDeepgram = () => {
+    deepgramLive = deepgram.listen.live({
+      model: 'nova-2',
+      language: 'cs',
+      smart_format: true,
+      interim_results: false
+    });
+
+    deepgramLive.on('open', () => {
+      console.log('🎯 Deepgram connected');
+    });
+
+    deepgramLive.on('transcript', async (data) => {
+      const transcript = data.channel.alternatives[0].transcript;
+      
+      if (transcript && transcript.trim()) {
+        console.log(`👤 User: "${transcript}"`);
+        
+        conversationHistory.push({ role: "user", content: transcript });
+        
+        if (conversationHistory.length > 6) {
+          conversationHistory = [conversationHistory[0], ...conversationHistory.slice(-4)];
+        }
+
+        try {
+          const completion = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: conversationHistory,
+            max_tokens: 30,
+            temperature: 0.7
+          });
+
+          const aiResponse = completion.choices[0].message.content.trim();
+          console.log(`🤖 AI: "${aiResponse}"`);
+          
+          conversationHistory.push({ role: "assistant", content: aiResponse });
+          
+          await streamTextToSpeech(aiResponse, streamSid, ws);
+
+        } catch (error) {
+          console.error('❌ OpenAI error:', error);
+          await streamTextToSpeech("Promiňte, chyba.", streamSid, ws);
+        }
+      }
+    });
+
+    deepgramLive.on('error', (error) => {
+      console.error('❌ Deepgram error:', error);
+    });
+  };
 
   ws.on('message', async (message) => {
     try {
       const msg = JSON.parse(message);
-      console.log(`📨 Received: ${msg.event}`);
       
       switch (msg.event) {
         case 'start':
           streamSid = msg.start.streamSid;
           console.log(`📞 Stream started: ${streamSid}`);
-          console.log(`🎵 Format: ${JSON.stringify(msg.start.mediaFormat)}`);
           
-          // Simple welcome message
-          await simpleTextToSpeech("Ahoj! Testujeme audio.", streamSid, ws);
+          initializeDeepgram();
+          
+          // Simple welcome
+          await streamTextToSpeech("Ahoj! Jsem Jana.", streamSid, ws);
           break;
           
         case 'media':
-          // Just log for now, don't process
-          console.log(`🎵 Audio chunk received: ${msg.media.payload.length} chars`);
+          if (deepgramLive && deepgramLive.getReadyState() === 1) {
+            const audioData = Buffer.from(msg.media.payload, 'base64');
+            deepgramLive.send(audioData);
+          }
           break;
           
         case 'stop':
           console.log('⏹️ Stream stopped');
+          if (deepgramLive) {
+            deepgramLive.finish();
+          }
           break;
-          
-        case 'mark':
-          console.log(`🏷️ Mark: ${JSON.stringify(msg.mark)}`);
-          break;
-          
-        default:
-          console.log(`❓ Unknown event: ${msg.event}`);
       }
     } catch (error) {
-      console.error('❌ WebSocket message error:', error);
-      console.error('Raw message:', message.toString());
+      console.error('❌ Message error:', error);
     }
   });
 
   ws.on('close', () => {
-    console.log('🔌 WebSocket closed');
+    console.log('🔌 Connection closed');
+    if (deepgramLive) {
+      deepgramLive.finish();
+    }
   });
 
   ws.on('error', (error) => {
@@ -231,39 +252,17 @@ wss.on('connection', (ws) => {
   });
 });
 
-wss.on('error', (error) => {
-  console.error('❌ WebSocket Server error:', error);
-});
-
 // ---------------------------------------------------------------------------------
-// Start Server with Error Handling
+// Start Server
 // ---------------------------------------------------------------------------------
-
-server.on('error', (error) => {
-  console.error('❌ Server error:', error);
-});
 
 server.listen(PORT, () => {
-  console.log(`🚀 DEBUG Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📞 TwiML: http://localhost:${PORT}/twiml`);
-  console.log(`🏥 Health: http://localhost:${PORT}/health`);
-  console.log('🎯 Ready for testing!');
-});
-
-process.on('uncaughtException', (error) => {
-  console.error('❌ Uncaught Exception:', error);
-  process.exit(1);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-  process.exit(1);
+  console.log('🎯 Fixed ElevenLabs streaming ready!');
 });
 
 process.on('SIGINT', () => {
   console.log('\n🛑 Shutting down...');
-  server.close(() => {
-    console.log('✅ Server closed');
-    process.exit(0);
-  });
+  server.close(() => process.exit(0));
 });
