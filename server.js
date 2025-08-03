@@ -1,7 +1,8 @@
 // =================================================================================
-// Server-Side Code for Real-Time AI Voice Bot (Czech Welcome Message)
+// Server-Side Code for a Full Real-Time AI Conversational Bot
 // =================================================================================
-// This version uses ElevenLabs to stream a welcome message in Czech.
+// This version integrates Deepgram for Speech-to-Text and OpenAI for language
+// understanding to create a fully interactive AI assistant.
 
 // ---------------------------------------------------------------------------------
 // 1. Initialization and Configuration
@@ -11,17 +12,30 @@ require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
+const { createClient } = require('@deepgram/sdk');
+const OpenAI = require('openai');
 const ElevenLabs = require('elevenlabs-node');
 
+// --- Retrieve API Keys and Configuration ---
 const PORT = process.env.PORT || 8080;
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
 
-// Check for ElevenLabs keys
-if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) {
-  console.error("FATAL ERROR: Missing ElevenLabs API Key or Voice ID. Please check your .env file.");
+// --- Validate Essential Keys ---
+if (!DEEPGRAM_API_KEY || !OPENAI_API_KEY || !ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) {
+  console.error("FATAL ERROR: Missing one or more required API keys. Please check your .env file.");
   process.exit(1);
 }
+
+// --- Initialize External Services ---
+const deepgram = createClient(DEEPGRAM_API_KEY);
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+const voice = new ElevenLabs({
+  apiKey: ELEVENLABS_API_KEY,
+  voiceId: ELEVENLABS_VOICE_ID,
+});
 
 const app = express();
 const server = http.createServer(app);
@@ -31,10 +45,8 @@ const server = http.createServer(app);
 // ---------------------------------------------------------------------------------
 
 app.post('/twiml', (req, res) => {
-  console.log("Received TwiML request from Twilio.");
   const host = req.get('host');
   const websocketUrl = `wss://${host}`;
-
   const twiml = `
     <Response>
       <Connect>
@@ -42,88 +54,112 @@ app.post('/twiml', (req, res) => {
       </Connect>
     </Response>
   `;
-
   res.type('text/xml');
   res.send(twiml);
-  console.log("Sent TwiML response to Twilio.");
 });
 
 // ---------------------------------------------------------------------------------
-// 3. WebSocket Server for Real-Time Communication (Welcome Message Logic)
+// 3. WebSocket Server for Real-Time AI Conversation
 // ---------------------------------------------------------------------------------
 
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws) => {
   console.log('A new WebSocket connection has been established.');
+  let deepgramLive;
   let streamSid;
+  let conversationHistory = [{ role: "system", content: "You are a helpful and conversational AI assistant speaking in Czech. Your name is Jana. Be concise and friendly. The current date is August 3, 2025." }];
 
+  // --- Function to stream text to ElevenLabs and then to Twilio ---
+  const streamTextToSpeech = async (text) => {
+    if (!text || !streamSid) return;
+    console.log(`AI Speaking: "${text}"`);
+    try {
+      const ttsStream = await voice.textToSpeechStream({
+        text: text,
+        modelId: "eleven_multilingual_v2",
+      });
+
+      for await (const chunk of ttsStream) {
+        const audioBase64 = chunk.toString('base64');
+        const mediaMessage = {
+          event: "media",
+          streamSid: streamSid,
+          media: { payload: audioBase64 },
+        };
+        ws.send(JSON.stringify(mediaMessage));
+      }
+      
+      // Send a mark message to indicate the end of the bot's speech
+      ws.send(JSON.stringify({ event: "mark", streamSid: streamSid, mark: { name: "bot_finished_speaking" }}));
+    } catch (error) {
+      console.error("Error during Text-to-Speech streaming:", error);
+    }
+  };
+
+  // --- Establish Deepgram Connection ---
+  deepgramLive = deepgram.listen.live({
+    model: 'nova-2',
+    language: 'cs', // Set language to Czech
+    smart_format: true,
+    interim_results: false, // We only want final transcripts
+  });
+
+  deepgramLive.on('open', () => console.log('Deepgram connection opened.'));
+  deepgramLive.on('error', (error) => console.error('Deepgram error:', error));
+  
+  // --- Handle Transcripts from Deepgram ---
+  deepgramLive.on('transcript', async (data) => {
+    const transcript = data.channel.alternatives[0].transcript;
+    if (transcript) {
+      console.log(`User said: "${transcript}"`);
+      conversationHistory.push({ role: "user", content: transcript });
+
+      try {
+        const completion = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: conversationHistory,
+        });
+
+        const aiResponse = completion.choices[0].message.content;
+        conversationHistory.push({ role: "assistant", content: aiResponse });
+        await streamTextToSpeech(aiResponse);
+
+      } catch (error) {
+        console.error("Error getting response from OpenAI:", error);
+      }
+    }
+  });
+
+  // --- Handle Messages from Twilio ---
   ws.on('message', async (message) => {
     const msg = JSON.parse(message);
-
     switch (msg.event) {
       case 'start':
         streamSid = msg.start.streamSid;
-        console.log(`Twilio has started the media stream with SID: ${streamSid}`);
-        
-        // --- Play a welcome message using ElevenLabs ---
-        try {
-          console.log("Attempting to stream welcome message from ElevenLabs...");
-          const voice = new ElevenLabs({
-            apiKey: ELEVENLABS_API_KEY,
-            voiceId: ELEVENLABS_VOICE_ID,
-          });
-
-          // Generate the audio stream for our welcome message in Czech
-          const welcomeStream = await voice.textToSpeechStream({
-            text: "Dobrý den! Jak vám mohu pomoci?", // "Hello! How can I help you?" in Czech
-            modelId: "eleven_multilingual_v2", // Using a multilingual model for best results
-          });
-
-          // Pipe the audio from ElevenLabs back to the caller via Twilio
-          for await (const chunk of welcomeStream) {
-            const audioBase64 = chunk.toString('base64');
-            const mediaMessage = {
-              event: "media",
-              streamSid: streamSid,
-              media: {
-                payload: audioBase64,
-              },
-            };
-            ws.send(JSON.stringify(mediaMessage));
-          }
-          console.log("Finished streaming welcome message.");
-
-          // Send a "mark" message to Twilio to indicate we've finished speaking
-          const markMessage = {
-            event: "mark",
-            streamSid: streamSid,
-            mark: { name: "welcome_message_finished" },
-          };
-          ws.send(JSON.stringify(markMessage));
-
-        } catch (err) {
-            console.error("Error with ElevenLabs stream:", err);
+        console.log(`Twilio media stream started (SID: ${streamSid})`);
+        await streamTextToSpeech("Dobrý den! U telefonu Jana, jak vám mohu pomoci?");
+        break;
+      case 'media':
+        // Forward incoming audio from Twilio to Deepgram
+        if (deepgramLive && deepgramLive.getReadyState() === 1) {
+          deepgramLive.send(Buffer.from(msg.media.payload, 'base64'));
         }
         break;
-
-      case 'media':
-        // We are not processing incoming audio in this version yet.
-        break;
-
       case 'stop':
-        console.log('Twilio has stopped the media stream.');
-        streamSid = null;
+        console.log('Twilio media stream stopped.');
+        if (deepgramLive) {
+          deepgramLive.finish();
+        }
         break;
     }
   });
 
   ws.on('close', () => {
-    console.log('WebSocket connection has been closed.');
-  });
-
-  ws.on('error', (err) => {
-    console.error('WebSocket error:', err);
+    console.log('WebSocket connection closed.');
+    if (deepgramLive) {
+      deepgramLive.finish();
+    }
   });
 });
 
@@ -133,5 +169,5 @@ wss.on('connection', (ws) => {
 
 server.listen(PORT, () => {
   console.log(`Server is listening on port ${PORT}`);
-  console.log("AI Welcome Bot is running.");
+  console.log("Full AI Conversational Bot is running.");
 });
