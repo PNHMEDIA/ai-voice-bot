@@ -163,11 +163,11 @@ Odpověz jako skutečný člověk - přirozeně, s empatií, použij jméno poku
       const completion = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: finalMessages,
-        max_tokens: 150,
-        temperature: 0.9,          // Vysoká kreativita pro přirozenost
-        top_p: 1.0,               // Plná variabilita
-        presence_penalty: 0.8,     // Podpora nových témat
-        frequency_penalty: 0.4     // Méně opakování
+        max_tokens: 120,            // OPTIMIZED: Shorter for faster response
+        temperature: 0.9,           // High creativity for naturalness
+        top_p: 1.0,                // Full variability  
+        presence_penalty: 0.8,      // Support new topics
+        frequency_penalty: 0.4      // Less repetition
       });
 
       let response = completion.choices[0].message.content.trim();
@@ -197,37 +197,38 @@ Odpověz jako skutečný člověk - přirozeně, s empatií, použij jméno poku
 }
 
 // ---------------------------------------------------------------------------------
-// FIXED SPEECH SYNTHESIS - Natural Human Voice
+// ELEVENLABS V3 + ANET 2.0 - Ultra-Natural Czech Speech
 // ---------------------------------------------------------------------------------
 
 const streamNaturalSpeech = async (text, streamSid, ws) => {
   if (!text || !streamSid) return;
   
-  console.log(`🎤 Jana (natural): "${text}"`);
+  console.log(`🎤 Jana (Anet 2.0 - v3): "${text}"`);
   
-  // Clear any existing audio
+  // Clear any existing audio immediately
   ws.send(JSON.stringify({ event: "clear", streamSid }));
 
   try {
-    const streamingUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream-input?model_id=eleven_turbo_v2&output_format=ulaw_8000`;
+    // ElevenLabs v3 with Anet 2.0 streaming URL
+    const streamingUrl = `wss://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream-input?model_id=eleven_v3&output_format=ulaw_8000`;
     
     const elevenLabsWs = new WebSocket(streamingUrl, {
       headers: { 'xi-api-key': ELEVENLABS_API_KEY }
     });
 
     elevenLabsWs.on('open', () => {
-      // FIXED VOICE SETTINGS for natural human sound
+      // Optimized settings for Anet 2.0 + v3 model
       elevenLabsWs.send(JSON.stringify({
-        text: text,
+        text,
         voice_settings: {
-          stability: 0.4,            // More natural variation
-          similarity_boost: 0.75,    // Keep voice consistent
+          stability: 0.4,            // Natural variation
+          similarity_boost: 0.75,    // Consistent voice
           style: 1.0,               // Full expressiveness
-          use_speaker_boost: true    // Clear natural speech
+          use_speaker_boost: true    // Clear speech
         }
-        // Removed chunk_length_schedule - let ElevenLabs handle it naturally
       }));
       
+      // End text stream
       elevenLabsWs.send(JSON.stringify({ text: "" }));
     });
 
@@ -236,31 +237,32 @@ const streamNaturalSpeech = async (text, streamSid, ws) => {
         const response = JSON.parse(data);
         
         if (response.audio) {
+          // Stream audio immediately to Twilio
           ws.send(JSON.stringify({
             event: "media",
-            streamSid: streamSid,
+            streamSid,
             media: { payload: response.audio }
           }));
         }
         
         if (response.isFinal) {
-          ws.send(JSON.stringify({ 
-            event: "mark", 
-            streamSid, 
+          ws.send(JSON.stringify({
+            event: "mark",
+            streamSid,
             mark: { name: "speech_done" }
           }));
         }
-      } catch (error) {
-        console.error('❌ Audio processing error:', error);
+      } catch (err) {
+        console.error("❌ Audio JSON parse error:", err);
       }
     });
 
-    elevenLabsWs.on('error', (error) => {
-      console.error('❌ TTS error:', error);
+    elevenLabsWs.on('error', (err) => {
+      console.error("❌ ElevenLabs WS error:", err);
     });
 
-  } catch (error) {
-    console.error('❌ Speech synthesis error:', error);
+  } catch (err) {
+    console.error("❌ Speech synthesis stream error:", err);
   }
 };
 
@@ -292,16 +294,16 @@ wss.on('connection', (ws) => {
       model: 'nova-2',
       language: 'cs',
       smart_format: true,
-      interim_results: false,      // Only final results to avoid confusion
+      interim_results: false,      // Only final results for clean processing
       punctuate: true,
       profanity_filter: false,
       numerals: true,
-      endpointing: 100,           // FIXED: Quick natural response
-      utterance_end_ms: 300       // FIXED: Natural pause detection
+      endpointing: 100,           // OPTIMIZED: Ultra-fast response 
+      utterance_end_ms: 150       // OPTIMIZED: Minimal delay for natural flow
     });
 
     deepgramLive.on('open', () => {
-      console.log('🎯 Fixed speech recognition ready');
+      console.log('🎯 Optimized speech recognition ready (100ms/150ms)');
     });
 
     deepgramLive.on('transcript', async (data) => {
@@ -321,9 +323,9 @@ wss.on('connection', (ws) => {
       isProcessing = true;
 
       try {
-        // Human thinking delay
-        const thinkingDelay = 200 + Math.random() * 400;
-        console.log(`🤔 Thinking ${thinkingDelay}ms...`);
+        // OPTIMIZED: Minimal thinking delay for faster response
+        const thinkingDelay = 100 + Math.random() * 200;
+        console.log(`🤔 Processing ${thinkingDelay}ms...`);
         await new Promise(resolve => setTimeout(resolve, thinkingDelay));
 
         // Add to conversation history PROPERLY
@@ -334,16 +336,21 @@ wss.on('connection', (ws) => {
           conversationHistory = conversationHistory.slice(-18);
         }
 
-        console.log('🧠 Generating truly human response...');
+        console.log('🧠 Generating response...');
+        const startTime = Date.now();
+        
         const response = await agent.generateTrulyHumanResponse(conversationHistory, transcript);
         
-        console.log(`🗣️ Jana: "${response}"`);
+        const aiTime = Date.now() - startTime;
+        console.log(`🗣️ Jana (${aiTime}ms): "${response}"`);
         
         // Add response to history
         conversationHistory.push({ role: "assistant", content: response });
         
-        // Speak naturally
+        // Stream speech immediately
+        const speechStart = Date.now();
         await streamNaturalSpeech(response, streamSid, ws);
+        console.log(`🎤 Speech started in ${Date.now() - speechStart}ms`);
 
       } catch (error) {
         console.error('❌ Processing error:', error);
