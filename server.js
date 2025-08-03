@@ -67,13 +67,14 @@ wss.on('connection', (ws) => {
   let conversationHistory = [{ role: "system", content: "You are a helpful and conversational AI assistant speaking in Czech. Your name is Jana. Be concise and friendly. The current date is August 3, 2025." }];
 
   // --- Function to stream text to ElevenLabs and then to Twilio ---
-  const streamTextToSpeech = async (text) => {
+  // Improved streamTextToSpeech function with better audio handling
+const streamTextToSpeech = async (text) => {
     if (!text || !streamSid) return;
     console.log(`AI Speaking: "${text}"`);
     
     // Clear any audio from the buffer before we start speaking
     ws.send(JSON.stringify({ event: "clear", streamSid: streamSid }));
-
+  
     const elevenLabsUrl = `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`;
     const headers = {
         "Content-Type": "application/json",
@@ -81,55 +82,77 @@ wss.on('connection', (ws) => {
     };
     const body = JSON.stringify({
         text: text,
-        model_id: "eleven_multilingual_v1", // Using v1 model for maximum stability
-        output_format: "ulaw_8000" // The required telephone format
+        model_id: "eleven_multilingual_v2", // Try v2 instead of v1
+        voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75,
+            style: 0.0,
+            use_speaker_boost: true
+        },
+        output_format: "pcm_16000" // Changed from ulaw_8000
     });
-
+  
     try {
         const response = await fetch(elevenLabsUrl, { method: 'POST', headers: headers, body: body });
         if (!response.ok) {
             throw new Error(`ElevenLabs API returned an error: ${response.status} ${response.statusText}`);
         }
         console.log("Successfully connected to ElevenLabs stream.");
-
+  
         const reader = response.body.getReader();
         let audioBuffer = Buffer.alloc(0);
-
-while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    audioBuffer = Buffer.concat([audioBuffer, Buffer.from(value)]);
-
-    while (audioBuffer.length >= 160) {
-        const chunk = audioBuffer.slice(0, 160);
-        audioBuffer = audioBuffer.slice(160);
-        const payload = chunk.toString('base64');
+        const chunkSize = 1024; // Process audio in smaller chunks
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+                // Process any remaining audio in buffer
+                if (audioBuffer.length > 0) {
+                    const audioBase64 = audioBuffer.toString('base64');
+                    const mediaMessage = {
+                        event: "media",
+                        streamSid: streamSid,
+                        media: { payload: audioBase64 },
+                    };
+                    ws.send(JSON.stringify(mediaMessage));
+                }
+                console.log("ElevenLabs stream finished.");
+                break;
+            }
+            
+            // Accumulate audio data
+            audioBuffer = Buffer.concat([audioBuffer, Buffer.from(value)]);
+            
+            // Send audio in chunks
+            while (audioBuffer.length >= chunkSize) {
+                const chunk = audioBuffer.slice(0, chunkSize);
+                audioBuffer = audioBuffer.slice(chunkSize);
+                
+                const audioBase64 = chunk.toString('base64');
+                const mediaMessage = {
+                    event: "media",
+                    streamSid: streamSid,
+                    media: { payload: audioBase64 },
+                };
+                ws.send(JSON.stringify(mediaMessage));
+                
+                // Small delay to prevent overwhelming the connection
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+        }
+        // Add this before sending audio to Twilio:
+console.log(`Sending audio chunk: ${audioBase64.length} characters, first 50: ${audioBase64.substring(0, 50)}`);
+        console.log("Sending 'bot_finished_speaking' mark.");
+        ws.send(JSON.stringify({ event: "mark", streamSid: streamSid, mark: { name: "bot_finished_speaking" }}));
+  
+    } catch (error) {
+        console.error("Error during Text-to-Speech streaming:", error);
+        // Fallback: send a simple text message if TTS fails
         ws.send(JSON.stringify({
             event: "media",
             streamSid: streamSid,
-            media: { payload }
+            media: { payload: "" }
         }));
-    }
-}
-
-// After stream ends, send any remaining audio (optional)
-if (audioBuffer.length > 0) {
-    // Optionally pad with silence if needed:
-    const padded = Buffer.concat([audioBuffer, Buffer.alloc(160 - audioBuffer.length)]);
-    const payload = padded.toString('base64');
-    ws.send(JSON.stringify({
-        event: "media",
-        streamSid: streamSid,
-        media: { payload }
-    }));
-}
-
-        
-        console.log("Sending 'bot_finished_speaking' mark.");
-        ws.send(JSON.stringify({ event: "mark", streamSid: streamSid, mark: { name: "bot_finished_speaking" }}));
-
-    } catch (error) {
-        console.error("Error during Text-to-Speech streaming:", error);
     }
   };
 
